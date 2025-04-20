@@ -1,0 +1,149 @@
+df=read.csv('Telco-Customer-Churn.csv')
+dfb=df
+
+# Handling missing values
+anyNA(df)
+for (i in 1:length(df)){
+  print(c(i,which(is.na(df[,i]))))
+}
+# In row = 20, col = 489,754,937,1083,1341,3332,3827,4381,5219,6671,6755, are NA
+df=df[-c(489,754,937,1083,1341,3332,3827,4381,5219,6671,6755),]
+
+for (i in 1:length(df)){
+  print(c(i,which(df[,i]=='')))
+}
+
+# Data preparation
+str(df)
+for (i in c(2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,21)){
+  df[,i]=as.factor(df[,i])
+}
+for (i in c(6,19,20)){
+  df[,i]=scale(df[,i])
+}
+summary(df)
+
+# data visualisation
+par(mfrow = c(1,3))
+for (i in c(6,19,20)){
+  boxplot(df[,i], main = names(df)[i])
+}
+
+# Removing customer id
+dfb1 = df
+df=df[,-1]
+
+# dimension reduction
+# domain knowledge
+dfb2=df
+names(df)
+df=df[,-c(1,2,3,9,10,11,12,16,17)]
+
+# Partitioning 60:20:20
+set.seed(123)
+part=sort(sample(1:nrow(df),0.6*nrow(df)))
+dftrain=df[part,]
+rpart=setdiff(1:nrow(df),part)
+vpart=sort(sample(rpart,0.2*nrow(df)))
+dfval=df[vpart,]
+dftest=df[-c(part,vpart),]
+rm(part,vpart,rpart)
+
+# Logical regression model
+modl = glm(Churn~., family = binomial(link = 'logit'), data = dftrain)
+summary(modl)
+
+# Testing the model
+modltrain=ifelse(modl$fitted.values>0.5,'Yes','No')
+modlval=ifelse(predict(modl,dfval[,-11],type = 'response')>0.5,'Yes','No')
+modltest=ifelse(predict(modl,dftest[,-11],type = 'response')>0.5,'Yes','No')
+
+# Calculating error
+errl = data.frame('set'=c('train','val','test'),
+                 'error'=c(100*mean(modltrain!=dftrain$Churn),
+                           100*mean(modlval!=dfval$Churn),
+                           100*mean(modltest!=dftest$Churn))); errl
+rm(modltrain,modlval,modltest)
+
+# CART
+library(rpart)
+modc = rpart(Churn~., data = dftrain, method = 'class',
+             control = rpart.control(cp=0, minsplit=2, minbucket=1,
+                                     maxcompete=0, maxsurrogate=0, xval=0))
+
+# Testing the model
+modctrain=predict(modc,dftrain,type = 'class')
+modcval=predict(modc,dfval,type = 'class')
+modctest=predict(modc,dftest,type = 'class')
+
+# Calculating error
+errc = data.frame('set'=c('train','val','test'),
+                 'error'=c(100*mean(modctrain!=dftrain$Churn),
+                           100*mean(modcval!=dfval$Churn),
+                           100*mean(modctest!=dftest$Churn))); errc
+rm(modctrain,modcval,modctest)
+
+# Pruning *Lag warning*
+nodes = sort(as.integer(row.names(modc$frame)),decreasing = T)
+nodesi = nodes[which(nodes<=1000)]
+toss1=NULL;modsval=NULL;errsval=NULL
+errscval=data.frame('i'=0,'errsval'=0)
+for (i in nodesi){
+  toss1=setdiff(nodes,i:1)
+  mods=snip.rpart(modc,toss1)
+  modsval=predict(mods,dfval,type = 'class')
+  errsval=mean(dfval$Churn!=modsval)
+  errscval=rbind(errscval,c(i,errsval))
+}
+errscval=errscval[-1,]
+
+# Pruned model
+toss = setdiff(nodes,errscval[which.min(errscval$errsval),]$i:1)
+modcp = snip.rpart(modc,toss = toss)
+rm(toss,toss1,mods,modsval,errsval,errscval,nodes,nodesi)
+
+# Testing the model
+modcptrain=predict(modcp,dftrain,type = 'class')
+modcpval=predict(modcp,dfval,type = 'class')
+modcptest=predict(modcp,dftest,type = 'class')
+
+# Calculating error
+errcp = data.frame('set'=c('train','val','test'),
+                  'error'=c(100*mean(modcptrain!=dftrain$Churn),
+                            100*mean(modcpval!=dfval$Churn),
+                            100*mean(modcptest!=dftest$Churn))); errcp
+rm(modcptrain,modcpval,modcptest)
+
+# K-NN model
+for (i in 1:ncol(df)) {
+  dftrain[,i]=as.numeric(dftrain[,i])
+  dfval[,i]=as.numeric(dfval[,i])
+  dftest[,i]=as.numeric(dftest[,i])
+}
+library(class)
+errkv=data.frame('i'=0,'train'=0,'val'=0,'test'=0)
+for (i in 1:20) {
+  errkv[i,1]=i
+  modk=knn(dftrain,dftrain,k=i,cl=dftrain$Churn)
+  errkv[i,2]=100*mean(dftrain$Churn!=modk)
+  modk=knn(dftrain,dfval,k=i,cl=dftrain$Churn)
+  errkv[i,3]=100*mean(dfval$Churn!=modk)
+  modk=knn(dftrain,dftest,k=i,cl=dftrain$Churn)
+  errkv[i,4]=100*mean(dftest$Churn!=modk)
+}
+# Testing the model
+modktrain=knn(dftrain,dftrain,k=errkv[which.min(errkv[,3]),1],cl=dftrain$Churn)
+modkval=knn(dftrain,dfval,k=errkv[which.min(errkv[,3]),1],cl=dftrain$Churn)
+modktest=knn(dftrain,dftest,k=errkv[which.min(errkv[,3]),1],cl=dftrain$Churn)
+
+# Calculating error
+errk = data.frame('set'=c('train','val','test'),
+                  'error'=c(100*mean(modktrain!=dftrain$Churn),
+                            100*mean(modkval!=dfval$Churn),
+                            100*mean(modktest!=dftest$Churn))); errk
+rm(modktrain,modkval,modktest,modk,errkv)
+
+# Merging all error results
+err1 = data.frame('code'=errl$set,'modl'=errl$error,'modc'=errc$error,
+                  'modcp'=errcp$error,'modk'=errk$error)
+rm(errl,errc,errcp,errk)
